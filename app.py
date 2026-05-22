@@ -114,8 +114,8 @@ with col2:
 # ---------------- CONFIG ----------------
 
 FUENTES = {
-    "Fuente 1 - Garantías": "https://www.datos.gov.co/resource/qzsc-9esp.json",
-    "Fuente 2 - Otra": "https://www.datos.gov.co/resource/w9zh-vetq.json"
+    "Fuente 1 - Tasas de interés activas por tipo de crédito – Últimos dos meses": "https://www.datos.gov.co/resource/qzsc-9esp.json",
+    "Fuente 2 - Tasas de interés activas por tipo de crédito – Histórico": "https://www.datos.gov.co/resource/w9zh-vetq.json"
 }
 
 LIMIT = 50000
