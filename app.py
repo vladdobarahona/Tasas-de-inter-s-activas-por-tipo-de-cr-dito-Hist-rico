@@ -1,13 +1,117 @@
 # -*- coding: utf-8 -*-
 """
+Aplicación Streamlit - Tasas de interés Activas por tipo de crédito - Histórico (df hasta dos meses antes + df últimos dos meses)
 Created on Thu Mar 26 20:33:13 2026
 
-@author: vbarahona
+Author: Vladimir Alonso Barahona Palacios
+
+Descripción:
+------------
+Aplicación interactiva desarrollada en Streamlit para la descarga,
+validación y procesamiento de información financiera con fines de supervisión,
+correspondiente a la información histórica desde la fecha de inicio de la serie
+hasta la fecha publicado por la Superintendencia Financiera de Colombia (SFC).
+
+La aplicación permite:
+- Consultar la fecha máxima disponible del dataset.
+- Descargar información por corte año mes.
+- Validar la cantidad de registros antes de descargar.
+- Procesar, limpiar y consolidar información agregada.
+- Descargar los datos con según plantilla de CIIU.
+- Generar un archivo Excel con información resumida.
+- Permitir la descarga directa del archivo consolidado.
+
+Fuente de datos:
+----------------
+Datos abiertos – Superintendencia Financiera de Colombia:
+https://www.superfinanciera.gov.co
+
+Repositorio oficial del dataset:
+df1
+https://www.datos.gov.co/Econom-a-y-Finanzas/Tasas-de-inter-s-activas-por-tipo-de-cr-dito-Hist-/w9zh-vetq/
+df2
+
+Categoría:
+----------
+Hacienda y Crédito Público
+
+Notas:
+------
+- Los datos son consultados en tiempo real desde la API de datos.gov.co (Socrata).
+- La aplicación soporta descargas masivas mediante paginación.
+- Exporta el reporte final en formato Excel compatible con reportes regulatorios.
 """
 
-from datetime import datetime, timedelta
-import requests
+import streamlit as st
 import pandas as pd
+import requests
+from datetime import datetime
+from io import BytesIO
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.utils import get_column_letter
+import re
+# ==============================
+# Estilos personalizados
+# ==============================
+st.markdown("""
+<style>
+    /* Fondo de toda la aplicación */
+    .stApp {
+        background: #ffffff !important;
+        font-family: "Segoe UI", "Frutiger", "Helvetica Neue", sans-serif;
+        padding-top: 20px;
+    }
+
+    /* Título principal */
+    .main-title {
+        color: rgb(120,154,61);
+        font-size: 2.5rem;
+        font-weight: 700;
+        line-height: 1.25;
+        margin-top: 15px;
+        margin-bottom: 0px;
+    }
+
+    /* Subtítulo */
+    .sub-title {
+        color: #4a4a4a;
+        font-size: 1.1rem;
+        margin-top: -5px;
+        margin-bottom: 25px;
+    }
+
+    /* Fondo general de la página (fuera del contenedor blanco) */
+    body {
+        background-color: rgb(171,190,76) !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ==============================
+# LOGO + TÍTULO
+# ==============================
+col1, col2 = st.columns([1, 3])
+
+with col1:
+    st.image(
+        "https://www.finagro.com.co/sites/default/files/logo-front-finagro.png",
+        width=180
+    )
+
+with col2:
+    st.markdown(
+        """
+        <h1 class="main-title">
+            Tasas de interés activas por tipo de crédito (Histórico) – Consulta, Descarga y Procesamiento
+        </h1>
+        <div class="sub-title">
+            Sistema de apoyo para traer información histórica e incluso la correspondiente a los dos últimos meses
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 # ---------------- CONFIG ----------------
 BASE_URL = "https://www.datos.gov.co/resource/qzsc-9esp.json"
