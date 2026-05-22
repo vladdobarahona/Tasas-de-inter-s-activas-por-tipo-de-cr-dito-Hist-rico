@@ -45,12 +45,9 @@ Notas:
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
-from openpyxl import Workbook
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.utils import get_column_letter
-import re
+
 # ==============================
 # Estilos personalizados
 # ==============================
@@ -113,127 +110,104 @@ with col2:
         unsafe_allow_html=True
     )
 
+
 # ---------------- CONFIG ----------------
-BASE_URL = "https://www.datos.gov.co/resource/qzsc-9esp.json"
+
+FUENTES = {
+    "Fuente 1 - Garantías": "https://www.datos.gov.co/resource/qzsc-9esp.json",
+    "Fuente 2 - Otra": "https://www.datos.gov.co/resource/w9zh-vetq.json"
+}
+
 LIMIT = 50000
 
+EXPECTED_SHEET = "CIIU"
+EXPECTED_COLUMNS = ["Codigo_CIIU"]
 
-def min_fecha():
-    query = '''
-https://www.datos.gov.co/resource/qzsc-9esp.json?$query=SELECT min(fecha_corte) AS min_fecha_corte
-    '''
-    response = requests.get(query)
+# ---------------- FUNCIONES GENERALES ----------------
 
-    if response.status_code != 200:
-        raise Exception(f"Error HTTP {response.status_code}: {response.text}")
+def obtener_min_max_fecha(base_url):
+    min_q = f"{base_url}?$query=SELECT min(fecha_corte) as min_fecha"
+    max_q = f"{base_url}?$query=SELECT max(fecha_corte) as max_fecha"
 
-    data = response.json()
-    
-    # Extraer solo YYYY-MM-DD
-    fecha_inicio = data[0]['min_fecha_corte'][:10]
-    
-    return fecha_inicio
+    min_fecha = requests.get(min_q).json()[0]["min_fecha"][:10]
+    max_fecha = requests.get(max_q).json()[0]["max_fecha"][:10]
 
-    
-def max_fecha():
-    query = '''
-https://www.datos.gov.co/resource/qzsc-9esp.json?$query=%20SELECT%20max(fecha_corte) AS max_fecha_corte
-    '''
-    response = requests.get(query)
+    return min_fecha, max_fecha
 
-    if response.status_code != 200:
-        raise Exception(f"Error HTTP {response.status_code}: {response.text}")
+# ---------------- RANGO MES ----------------
 
-    data = response.json()
-    
-    # Extraer solo YYYY-MM-DD
-    fecha_inicio = data[0]['max_fecha_corte'][:10]
-    
-    return fecha_inicio
+def calcular_rango_mes(year, month):
+    inicio = datetime(year, month, 1)
 
+    if month == 12:
+        siguiente = datetime(year + 1, 1, 1)
+    else:
+        siguiente = datetime(year, month + 1, 1)
 
-FECHA_INICIO = min_fecha()
-FECHA_FIN = max_fecha()
-#FECHA_INICIO = "2022-07-01"
-#FECHA_FIN = "2026-01-02"
-Sector = 'Agricultura, ganadería, silvicultura y pesca'
-Lista_CIIU = [
-    '0111',
-    '0112',
-    '0113',
-    '0114',
-    '0115',
-    '0119',
-    '0121',
-    '0122',
-    '0123',
-    '0124',
-    '0125',
-    '0126',
-    '0127',
-    '0129',
-    '0130',
-    '0141',
-    '0144',
-    '0145',
-    '0149',
-    '0150',
-    '0161',
-    '0162',
-    '0164',
-    '0210',
-    '0220',
-    '0240',
-    '0311',
-    '0312',
-    '0321',
-    '0322' 
-    ]
+    fin = siguiente - timedelta(days=1)
 
-#ciiu_str = ",".join(f"'{x}'" for x in Lista_CIIU)
-ciiu_str = ",".join(f"'{str(x).zfill(4)}'" for x in Lista_CIIU)
+    return inicio.strftime("%Y-%m-%d"), fin.strftime("%Y-%m-%d")
 
+# ---------------- EXCEL ----------------
 
-# ---------------- FUNCIONES ----------------
+def validar_excel(file):
+    try:
+        xls = pd.ExcelFile(file)
 
-def generar_rangos_mensuales(fecha_inicio, fecha_fin):
-    """
-    Genera tuplas (fecha_desde, fecha_hasta) por mes
-    """
-    inicio = datetime.strptime(fecha_inicio, "%Y-%m-%d")
-    fin = datetime.strptime(fecha_fin, "%Y-%m-%d")
+        if EXPECTED_SHEET not in xls.sheet_names:
+            return False, "Hoja incorrecta"
 
-    rangos = []
-    actual = inicio.replace(day=1)
+        df = pd.read_excel(file, sheet_name=EXPECTED_SHEET)
 
-    while actual <= fin:
-        if actual.month == 12:
-            siguiente = actual.replace(year=actual.year + 1, month=1)
-        else:
-            siguiente = actual.replace(month=actual.month + 1)
+        if list(df.columns) != EXPECTED_COLUMNS:
+            return False, "Columnas incorrectas"
 
-        fin_mes = siguiente - timedelta(days=1)
-        if fin_mes > fin:
-            fin_mes = fin
+        return True, df
 
-        rangos.append((actual.date(), fin_mes.date()))
-        actual = siguiente
+    except Exception as e:
+        return False, str(e)
 
-    return rangos
+def crear_template():
+    df = pd.DataFrame({"Codigo_CIIU": ["0111", "0112"]})
+    buffer = BytesIO()
 
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="CIIU", index=False)
 
-def descargar_mes(Lista_CIIU, fecha_desde, fecha_hasta):
-    """
-    Descarga todos los registros para un mes específico
-    """
+    return buffer.getvalue()
+
+# ---------------- DISTINCT DINÁMICO ----------------
+
+def obtener_valores_distintos(base_url, campo):
+    query = f"{base_url}?$query=SELECT DISTINCT {campo} as valor"
+
+    r = requests.get(query)
+
+    if r.status_code != 200:
+        st.error("Error consultando valores")
+        return []
+
+    data = r.json()
+    return [x["valor"] for x in data if x["valor"]]
+
+# ---------------- DESCARGA ----------------
+
+def descargar(base_url, filtro_tipo, valores, fecha_desde, fecha_hasta):
+
+    if filtro_tipo == "CIIU":
+        ciiu_str = ",".join(f"'{str(x).zfill(4)}'" for x in valores)
+        extra_filtro = f"Codigo_CIIU in ({ciiu_str})"
+    else:
+        val_str = ",".join(f"'{x}'" for x in valores)
+        extra_filtro = f"tipo_de_garant_a in ({val_str})"
+
     where_clause = (
         f"fecha_corte between '{fecha_desde}T00:00:00' "
-        f"and '{fecha_hasta}T23:59:59' "
-        f"AND Codigo_CIIU in ({ciiu_str})"
+        f"and '{fecha_hasta}T23:59:59' AND {extra_filtro}"
     )
 
-    offset = 0
     filas = []
+    offset = 0
 
     while True:
         params = {
@@ -242,11 +216,14 @@ def descargar_mes(Lista_CIIU, fecha_desde, fecha_hasta):
             "$where": where_clause
         }
 
-        r = requests.get(BASE_URL, params=params)
+        r = requests.get(base_url, params=params)
+
         if r.status_code != 200:
-            raise Exception(f"Error HTTP {r.status_code}: {r.text}")
+            st.error("Error en descarga")
+            break
 
         data = r.json()
+
         if not data:
             break
 
@@ -255,44 +232,112 @@ def descargar_mes(Lista_CIIU, fecha_desde, fecha_hasta):
 
     if filas:
         return pd.DataFrame(filas)
-    else:
-        return pd.DataFrame()
 
+    return pd.DataFrame()
 
-# ---------------- EJECUCIÓN ----------------
+# ---------------- UI ----------------
 
-if __name__ == "__main__":
+st.title("📊 Descarga Datos Dinámicos")
 
-    rangos = generar_rangos_mensuales(FECHA_INICIO, FECHA_FIN)
+# -------- Fuente --------
+fuente_nombre = st.selectbox("Fuente de datos", list(FUENTES.keys()))
+BASE_URL = FUENTES[fuente_nombre]
 
-    dfs_mensuales = []
+min_f, max_f = obtener_min_max_fecha(BASE_URL)
 
-    print(f"Total de meses a procesar: {len(rangos)}")
+st.info(f"Datos disponibles: {min_f} → {max_f}")
 
-    for fecha_desde, fecha_hasta in rangos:
-        print(f"Procesando {fecha_desde} -> {fecha_hasta}")
+# -------- Fecha --------
+col1, col2 = st.columns(2)
 
-        df_mes = descargar_mes(
-            Lista_CIIU,
-            fecha_desde.strftime("%Y-%m-%d"),
-            fecha_hasta.strftime("%Y-%m-%d")
+with col1:
+    year = st.number_input("Año", 2000, 2100, 2024)
+
+with col2:
+    month = st.selectbox("Mes", list(range(1, 13)))
+
+fecha_desde, fecha_hasta = calcular_rango_mes(year, month)
+
+st.success(f"📅 {fecha_desde} → {fecha_hasta}")
+
+# -------- Tipo de filtro --------
+st.subheader("Tipo de filtro")
+
+filtro_tipo = st.radio("Filtrar por:", ["CIIU", "Tipo Garantía"])
+
+# -------- CIIU --------
+
+ciiu_list = []
+excel_valido = False
+
+if filtro_tipo == "CIIU":
+
+    st.download_button("Descargar plantilla CIIU", crear_template(), "plantilla.xlsx")
+
+    file = st.file_uploader("Subir Excel", type=["xlsx"])
+
+    if file:
+        ok, res = validar_excel(file)
+
+        if ok:
+            excel_valido = True
+            ciiu_list = res["Codigo_CIIU"].astype(str).tolist()
+            st.success("Excel válido")
+        else:
+            st.error(res)
+
+# -------- VARIABLE DINÁMICA --------
+
+valores_variable = []
+
+if filtro_tipo == "Tipo Garantía":
+
+    if st.button("Cargar valores únicos"):
+        valores_variable = obtener_valores_distintos(BASE_URL, "tipo_de_garant_a")
+        st.session_state["valores"] = valores_variable
+
+    if "valores" in st.session_state:
+        valores_variable = st.multiselect(
+            "Seleccione valores",
+            st.session_state["valores"]
         )
 
-        if not df_mes.empty:
-            df_mes["periodo"] = fecha_desde.strftime("%Y-%m")
-            dfs_mensuales.append(df_mes)
+# -------- EJECUCIÓN --------
 
-            print(f"  Registros descargados: {len(df_mes)}")
+if st.button("📥 Descargar datos"):
+
+    # VALIDACIONES
+    if filtro_tipo == "CIIU" and not excel_valido:
+        st.warning("Debe cargar un Excel válido")
+        st.stop()
+
+    if filtro_tipo == "Tipo Garantía" and not valores_variable:
+        st.warning("Seleccione al menos un valor")
+        st.stop()
+
+    valores = ciiu_list if filtro_tipo == "CIIU" else valores_variable
+
+    with st.spinner("Descargando..."):
+
+        df = descargar(
+            BASE_URL,
+            filtro_tipo,
+            valores,
+            fecha_desde,
+            fecha_hasta
+        )
+
+        if df.empty:
+            st.warning("Sin datos")
         else:
-            print("  Sin registros")
+            output = BytesIO()
+            df.to_excel(output, index=False)
+            output.seek(0)
 
-    # Apilar todos los meses
-    if dfs_mensuales:
-        df_final = pd.concat(dfs_mensuales, ignore_index=True)
-        print(f"\n✅ Total registros final: {len(df_final)}")
-    else:
-        df_final = pd.DataFrame()
-        print("\n⚠️ No se descargaron registros")
-        
-        
-df_final.to_excel(f"e://riesgos/{Sector}_datos_abiertos_últimos_dos_meses.xlsx", index=False)
+            st.success(f"✅ Registros: {len(df)}")
+
+            st.download_button(
+                "⬇ Descargar Excel",
+                output,
+                file_name="datos.xlsx"
+            )
